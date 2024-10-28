@@ -163,8 +163,14 @@ macro_rules! unsigned_fixed {
             #[doc = "Checked decimal division"]
             #[doc = "\n\nComputes `self / other`, returning `None` if overflow occurred or if `other` is zero."]
             #[doc = concat!("\n\nSee [`", stringify!($underlying), "::checked_div`] for more information.")]
-            pub const fn checked_div(&self, other: Self) -> Option<Self> {
-                map_const!(self.0.checked_div(other.0), v => Self(v, PhantomData))
+            pub fn checked_div(&self, other: Self) -> Option<Self> {
+                self.mul_ratio(Self::ONE, other)
+                // self.0.checked_div(other.0)
+                //     .and_then(|v| v.checked_mul(
+                //         <Self as _priv::Consts>::FRACTIONAL_H.0
+                //     ))
+                //     .and_then(|v| v.try_into().ok())
+                //     .map(|v| Self(v, PhantomData))
             }
 
             #[doc = "Checked decimal exponentiation"]
@@ -261,8 +267,9 @@ macro_rules! unsigned_fixed {
             #[doc = "Returns the largest integer less than or equal to this decimal value"]
             #[doc = "\n\nThis operation maintains the correct decimal scaling."]
             pub fn floor(&self) -> Self {
-                self.checked_div(<Self as _priv::Consts>::FRACTIONAL_H)
-                    .and_then(|v| v.checked_mul(<Self as _priv::Consts>::FRACTIONAL_H))
+                self.0.checked_div(<Self as _priv::Consts>::FRACTIONAL_H.0)
+                    .and_then(|v| v.checked_mul(<Self as _priv::Consts>::FRACTIONAL_H.0))
+                    .map(|v| Self(v, PhantomData))
                     .unwrap()
             }
 
@@ -294,3 +301,231 @@ unsigned_fixed!(Dec64 (IsLeq19) => 64 u64 U128);
 pub type Decimal128 = Dec128<typenum::U18>;
 pub type Uint128 = Dec128<typenum::U0>;
 pub type Uint64 = Dec64<typenum::U0>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use typenum::{U0, U18};
+
+    // Helper functions for Decimal128 (Dec128<U18>)
+    fn d128(whole: u128) -> Decimal128 {
+        Decimal128::raw(whole * Decimal128::ONE.0)
+    }
+
+    fn d128_parts(whole: u128, frac: u128) -> Decimal128 {
+        Decimal128::raw(whole * Decimal128::ONE.0 + frac)
+    }
+
+    // Helper functions for Uint128 (Dec128<U0>)
+    fn u128_dec(val: u128) -> Uint128 {
+        Uint128::raw(val)
+    }
+
+    #[test]
+    fn test_constants() {
+        // Test basic constants
+        assert_eq!(Decimal128::ZERO.0, 0);
+        assert_eq!(Decimal128::ONE.0, 10u128.pow(18));
+        assert_eq!(Decimal128::MIN.0, u128::MIN);
+        assert_eq!(Decimal128::MAX.0, u128::MAX);
+
+        // Ensure ONE is properly scaled for different decimal places
+        assert_eq!(Uint128::ONE.0, 1); // 0 decimal places
+        assert_eq!(Dec128::<typenum::U1>::ONE.0, 10); // 1 decimal place
+        assert_eq!(Decimal128::ONE.0, 10u128.pow(18)); // 18 decimal places
+    }
+
+    #[test]
+    fn test_raw_construction() {
+        let value = 123456789;
+        let dec = Decimal128::raw(value);
+        assert_eq!(dec.0, value);
+
+        let dec_from = Decimal128::from_raw(value);
+        assert_eq!(dec_from.0, value);
+    }
+
+    #[test]
+    fn test_byte_conversions() {
+        let value = d128(12345);
+
+        let be_bytes = value.to_be_bytes();
+        let le_bytes = value.to_le_bytes();
+
+        assert_eq!(Decimal128::from_be_bytes(be_bytes), value);
+        assert_eq!(Decimal128::from_le_bytes(le_bytes), value);
+    }
+
+    #[test]
+    fn test_zero() {
+        let zero = Decimal128::ZERO;
+        assert!(zero.is_zero());
+        assert!(!d128(1).is_zero());
+    }
+
+    #[test]
+    fn test_checked_arithmetic() {
+        let a = d128(100);
+        let b = d128(50);
+
+        // Basic arithmetic
+        assert_eq!(a.checked_add(b).unwrap(), d128(150));
+        assert_eq!(a.checked_sub(b).unwrap(), d128(50));
+        assert_eq!(a.checked_mul(b).unwrap(), d128(5000));
+        assert_eq!(a.checked_div(b).unwrap(), d128(2));
+
+        // Edge cases
+        assert!(Decimal128::MAX.checked_add(d128(1)).is_none());
+        assert!(Decimal128::MIN.checked_sub(d128(1)).is_none());
+        assert!(d128(1).checked_div(Decimal128::ZERO).is_none());
+    }
+
+    #[test]
+    fn test_fractional_arithmetic() {
+        let one_half = d128_parts(0, Decimal128::ONE.0 / 2);
+        let two = d128(2);
+
+        // Test that 0.5 * 2 = 1
+        assert_eq!(one_half.checked_mul(two).unwrap(), Decimal128::ONE);
+
+        // Test that 1 / 2 = 0.5
+        assert_eq!(Decimal128::ONE.checked_div(two).unwrap(), one_half);
+    }
+
+    #[test]
+    fn test_saturating_arithmetic() {
+        let max = Decimal128::MAX;
+        let one = Decimal128::ONE;
+        let min = Decimal128::ZERO; // For unsigned types, MIN is 0
+
+        // Test saturation at upper bound
+        assert_eq!(max.saturating_add(one), max);
+
+        // Test saturation at lower bound
+        assert_eq!(min.saturating_sub(one), min);
+    }
+
+    #[test]
+    fn test_abs_diff() {
+        let a = d128(100);
+        let b = d128(50);
+
+        assert_eq!(a.abs_diff(b), d128(50));
+        assert_eq!(b.abs_diff(a), d128(50));
+    }
+
+    #[test]
+    fn test_comparison() {
+        let a = d128(100);
+        let b = d128(50);
+        let c = d128(100);
+
+        assert!(a > b);
+        assert!(b < a);
+        assert_eq!(a, c);
+        assert!(a >= c);
+        assert!(a <= c);
+    }
+
+    #[test]
+    fn test_mul_ratio() {
+        let base = d128(100);
+        let num = d128(3);
+        let den = d128(4);
+
+        // Test that 100 * (3/4) = 75
+        assert_eq!(base.mul_ratio(num, den).unwrap(), d128(75));
+
+        // Test division by zero
+        assert!(base.mul_ratio(num, Decimal128::ZERO).is_none());
+    }
+
+    #[test]
+    fn test_zero_type_operations() {
+        // Test operations specific to Zero digit type (Uint128)
+        let a = u128_dec(4);
+        let b = u128_dec(2);
+
+        assert_eq!(a.checked_shl(1).unwrap(), u128_dec(8));
+        assert_eq!(a.checked_shr(1).unwrap(), u128_dec(2));
+
+        // Test overflow cases
+        assert!(a.checked_shl(128).is_none());
+        assert!(a.checked_shr(128).is_none());
+    }
+
+    #[test]
+    fn test_non_zero_type_operations() {
+        // Test operations specific to NonZero digit type (Decimal128)
+        let two = d128(2);
+        let one_half = d128_parts(0, Decimal128::ONE.0 / 2);
+
+        // Test reciprocal
+        assert_eq!(two.reciprocal().unwrap(), one_half);
+        assert_eq!(Decimal128::ONE.reciprocal().unwrap(), Decimal128::ONE);
+        assert!(Decimal128::ZERO.reciprocal().is_none());
+
+        // Test floor and ceil
+        let val = d128_parts(3, Decimal128::ONE.0 / 2); // 3.5
+        assert_eq!(val.floor(), d128(3));
+        assert_eq!(val.checked_ceil().unwrap(), d128(4));
+        assert_eq!(val.unchecked_ceil(), d128(4));
+
+        // Test exact values
+        let exact = d128(5);
+        assert_eq!(exact.floor(), exact);
+        assert_eq!(exact.checked_ceil().unwrap(), exact);
+    }
+
+    #[test]
+    fn test_precision_loss() {
+        // Test that multiplying two numbers with 18 decimal places
+        // correctly handles the 36 decimal places of precision
+        let small = d128_parts(0, 1); // Smallest possible positive value
+        let result = small.checked_mul(small).unwrap();
+        assert_eq!(result.0, 0); // Should round to zero due to precision loss
+    }
+
+    #[test]
+    fn test_large_values() {
+        let large = d128(u64::MAX as u128);
+        let larger = d128((u64::MAX as u128) * 2);
+
+        assert!(larger.checked_mul(d128(2)).is_some());
+        assert!(larger.checked_mul(d128(u64::MAX as u128)).is_none());
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_unchecked_ceil_panic() {
+        let almost_max = Decimal128::from_raw(u128::MAX - 1);
+        let _ = almost_max.unchecked_ceil(); // Should panic
+    }
+
+    // Tests for unimplemented functions (todo!())
+    // These tests document the expected behavior when implemented
+
+    #[test]
+    #[should_panic]
+    fn test_checked_pow() {
+        let base = d128(2);
+        let _ = base.checked_pow(3); // Currently panics with todo!()
+
+        // Expected behavior when implemented:
+        // assert_eq!(base.checked_pow(2).unwrap(), d128(4));
+        // assert_eq!(base.checked_pow(0).unwrap(), d128(1));
+        // assert!(base.checked_pow(128).is_none());  // Overflow
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_saturating_mul() {
+        let a = d128(100);
+        let b = d128(2);
+        let _ = a.saturating_mul(b); // Currently panics with todo!()
+
+        // Expected behavior when implemented:
+        // assert_eq!(a.saturating_mul(b), d128(200));
+        // assert_eq!(Decimal128::MAX.saturating_mul(d128(2)), Decimal128::MAX);
+    }
+}
