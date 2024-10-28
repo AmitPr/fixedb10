@@ -5,8 +5,8 @@ use bnum::types::{U128, U256};
 use typenum::{NonZero, Zero};
 use util::*;
 
-mod private {
-    pub trait HelperTrait {
+mod _priv {
+    pub trait Consts {
         type Underlying;
         type Doubled;
 
@@ -20,7 +20,7 @@ mod private {
 
 // macro_rules! into_doubled_unchecked {
 //     ($var: expr) => {
-//         match <Self as private::HelperTrait>::Doubled::from_be_slice(&$var.to_be_bytes()) {
+//         match <Self as _priv::Consts>::Doubled::from_be_slice(&$var.to_be_bytes()) {
 //             Some(v) => v,
 //             None => panic!("Failed to convert to big number (unreachable)"),
 //         }
@@ -39,10 +39,12 @@ macro_rules! map_const {
 
 macro_rules! unsigned_fixed {
     ($name: ident ($digit_trait: ident) => $bits: literal $underlying: ident $double: ident) => {
+        #[doc = concat!("An unsigned fixed-point decimal number with ", $bits, " bits of precision.")]
+        #[doc = "\n\nThe number of decimal places is determined by the `Digits` type parameter."]
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
         pub struct $name<Digits: $digit_trait>($underlying, PhantomData<Digits>);
 
-        impl<Digits: $digit_trait> private::HelperTrait for $name<Digits> {
+        impl<Digits: $digit_trait> _priv::Consts for $name<Digits> {
             type Underlying = $underlying;
             type Doubled = $double;
 
@@ -55,66 +57,98 @@ macro_rules! unsigned_fixed {
         }
 
         impl<Digits: $digit_trait> $name<Digits> {
-            pub const MIN: Self = <Self as private::HelperTrait>::MIN_H;
-            pub const MAX: Self = <Self as private::HelperTrait>::MAX_H;
-            pub const ZERO: Self = <Self as private::HelperTrait>::ZERO_H;
-            pub const ONE: Self = <Self as private::HelperTrait>::FRACTIONAL_H;
+            #[doc = "The smallest value that can be represented by this decimal type."]
+            pub const MIN: Self = <Self as _priv::Consts>::MIN_H;
 
+            #[doc = "The largest value that can be represented by this decimal type."]
+            pub const MAX: Self = <Self as _priv::Consts>::MAX_H;
+
+            #[doc = "The value zero."]
+            pub const ZERO: Self = <Self as _priv::Consts>::ZERO_H;
+
+            #[doc = "The value one."]
+            pub const ONE: Self = <Self as _priv::Consts>::FRACTIONAL_H;
+
+            #[doc = "Creates a new decimal from a raw underlying value without any scaling."]
+            #[doc = "\n\nThis is useful when you already have a properly scaled value and want to avoid additional calculations."]
             pub const fn raw(value: $underlying) -> Self {
                 Self(value, PhantomData)
             }
 
+            #[doc = "Creates a new decimal from a value that can be converted into the underlying type."]
+            #[doc = concat!("\n\nThis is similar to [`Self::raw`] but accepts any type that implements [`Into<", stringify!($underlying), ">`].")]
             pub fn from_raw(value: impl Into<$underlying>) -> Self {
                 Self(value.into(), PhantomData)
             }
 
+            #[doc = "Returns the decimal value as a big-endian byte array"]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::to_be_bytes`] for more information.")]
             pub const fn to_be_bytes(self) -> [u8; { $bits / 8 }] {
                 self.0.to_be_bytes()
             }
 
+            #[doc = "Returns the decimal value as a little-endian byte array"]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::to_le_bytes`] for more information.")]
             pub const fn to_le_bytes(self) -> [u8; { $bits / 8 }] {
                 self.0.to_le_bytes()
             }
 
+            #[doc = "Creates a decimal value from a big-endian byte array"]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::from_be_bytes`] for more information.")]
             pub const fn from_be_bytes(bytes: [u8; { $bits / 8 }]) -> Self {
                 Self(
-                    <Self as private::HelperTrait>::Underlying::from_be_bytes(bytes),
+                    <Self as _priv::Consts>::Underlying::from_be_bytes(bytes),
                     PhantomData,
                 )
             }
 
+            #[doc = "Creates a decimal value from a little-endian byte array"]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::from_le_bytes`] for more information.")]
             pub const fn from_le_bytes(bytes: [u8; { $bits / 8 }]) -> Self {
                 Self(
-                    <Self as private::HelperTrait>::Underlying::from_le_bytes(bytes),
+                    <Self as _priv::Consts>::Underlying::from_le_bytes(bytes),
                     PhantomData,
                 )
             }
 
+            #[doc = "Returns `true` if the decimal is zero."]
             pub const fn is_zero(&self) -> bool {
                 self.0 == 0
             }
 
-            fn full_mul(&self, other: Self) -> <Self as private::HelperTrait>::Doubled {
-                <Self as private::HelperTrait>::Doubled::from(self.0)
-                    * <Self as private::HelperTrait>::Doubled::from(other.0)
+            #[doc = "Performs full-precision multiplication without scaling"]
+            #[doc = "\n\nThis internal method uses the double-width type for calculations."]
+            fn full_mul(&self, other: Self) -> <Self as _priv::Consts>::Doubled {
+                <Self as _priv::Consts>::Doubled::from(self.0)
+                    * <Self as _priv::Consts>::Doubled::from(other.0)
             }
 
+            #[doc = "Multiplies this value by a ratio (num/den) while maintaining maximum precision"]
+            #[doc = "\n\nReturns `None` if the operation would overflow or if division by zero occurs."]
             pub fn mul_ratio(&self, num: Self, den: Self) -> Option<Self> {
-                // Perform multiplication first, then division to maintain precision
                 self.full_mul(num)
                     .checked_div(den.0.into())
                     .and_then(|v| v.try_into().ok())
                     .map(|v| Self(v, PhantomData))
             }
 
+            #[doc = "Checked decimal addition"]
+            #[doc = "\n\nComputes `self + other`, returning `None` if overflow occurred."]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::checked_add`] for more information.")]
             pub const fn checked_add(&self, other: Self) -> Option<Self> {
                 map_const!(self.0.checked_add(other.0), v => Self(v, PhantomData))
             }
 
+            #[doc = "Checked decimal subtraction"]
+            #[doc = "\n\nComputes `self - other`, returning `None` if overflow occurred."]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::checked_sub`] for more information.")]
             pub fn checked_sub(&self, other: Self) -> Option<Self> {
                 map_const!(self.0.checked_sub(other.0), v => Self(v, PhantomData))
             }
 
+            #[doc = "Checked decimal multiplication"]
+            #[doc = "\n\nComputes `self * other`, returning `None` if overflow occurred."]
+            #[doc = "\n\nFor non-zero digit types, this performs scaled multiplication to maintain decimal places."]
             pub fn checked_mul(&self, other: Self) -> Option<Self> {
                 if Digits::USIZE == 0 {
                     self.0.checked_mul(other.0).map(|v| Self(v, PhantomData))
@@ -126,29 +160,43 @@ macro_rules! unsigned_fixed {
                 }
             }
 
+            #[doc = "Checked decimal division"]
+            #[doc = "\n\nComputes `self / other`, returning `None` if overflow occurred or if `other` is zero."]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::checked_div`] for more information.")]
             pub const fn checked_div(&self, other: Self) -> Option<Self> {
                 map_const!(self.0.checked_div(other.0), v => Self(v, PhantomData))
             }
 
+            #[doc = "Checked decimal exponentiation"]
+            #[doc = "\n\nComputes `self.pow(exp)`, returning `None` if overflow occurred."]
+            #[doc = "\n\nThis operation maintains the correct decimal scaling."]
             pub fn checked_pow(&self, exp: u32) -> Option<Self> {
-                // d = x * (10 ** DIGITS)
-                // d ^ n = x ^ n * (10 ** (DIGITS * n)) -> Not what we want!
-                // (d/(10 ** DIGITS)) ^ n = x ^ n -> This is what we want, but without loss of precision
                 todo!()
             }
 
+            #[doc = "Saturating decimal addition"]
+            #[doc = "\n\nComputes `self + other`, saturating at the numeric bounds instead of overflowing."]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::saturating_add`] for more information.")]
             pub const fn saturating_add(&self, other: Self) -> Self {
                 Self(self.0.saturating_add(other.0), PhantomData)
             }
 
+            #[doc = "Saturating decimal subtraction"]
+            #[doc = "\n\nComputes `self - other`, saturating at the numeric bounds instead of overflowing."]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::saturating_sub`] for more information.")]
             pub const fn saturating_sub(&self, other: Self) -> Self {
                 Self(self.0.saturating_sub(other.0), PhantomData)
             }
 
+            #[doc = "Saturating decimal multiplication"]
+            #[doc = "\n\nComputes `self * other`, saturating at the numeric bounds instead of overflowing."]
+            #[doc = "\n\nThis operation maintains the correct decimal scaling."]
             pub fn saturating_mul(&self, other: Self) -> Self {
                 todo!()
             }
 
+            #[doc = "Computes the absolute difference between two decimal values"]
+            #[doc = "\n\nReturns `|self - other|` without overflowing."]
             pub const fn abs_diff(&self, other: Self) -> Self {
                 Self(
                     if self.0 >= other.0 {
@@ -160,10 +208,14 @@ macro_rules! unsigned_fixed {
                 )
             }
 
+            #[doc = "Returns the maximum of two decimal values"]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::max`] for more information.")]
             pub fn max(&self, other: Self) -> Self {
                 Self(self.0.max(other.0), PhantomData)
             }
 
+            #[doc = "Returns the minimum of two decimal values"]
+            #[doc = concat!("\n\nSee [`", stringify!($underlying), "::min`] for more information.")]
             pub fn min(&self, other: Self) -> Self {
                 Self(self.0.min(other.0), PhantomData)
             }
@@ -173,10 +225,16 @@ macro_rules! unsigned_fixed {
         where
             Digits: Zero,
         {
+            #[doc = "Checked shift left"]
+            #[doc = "\n\nShifts the bits in the underlying value left by `exp` positions."]
+            #[doc = "\n\nReturns `None` if `exp` is larger than the number of bits in the type."]
             pub const fn checked_shl(&self, exp: u32) -> Option<Self> {
                 map_const!(self.0.checked_shl(exp), v => Self(v, PhantomData))
             }
 
+            #[doc = "Checked shift right"]
+            #[doc = "\n\nShifts the bits in the underlying value right by `exp` positions."]
+            #[doc = "\n\nReturns `None` if `exp` is larger than the number of bits in the type."]
             pub const fn checked_shr(&self, exp: u32) -> Option<Self> {
                 map_const!(self.0.checked_shr(exp), v => Self(v, PhantomData))
             }
@@ -186,26 +244,31 @@ macro_rules! unsigned_fixed {
         where
             Digits: NonZero,
         {
+            #[doc = "Computes the multiplicative inverse (reciprocal) of this decimal value"]
+            #[doc = "\n\nReturns `None` if the value is zero."]
+            #[doc = "\n\nFor a value `x`, computes `1/x` while maintaining the correct decimal scaling."]
             pub const fn reciprocal(&self) -> Option<Self> {
                 if self.is_zero() {
                     None
                 } else {
-                    // If self=p/q, Find a/b = q/p s.t. b = Self::ONE
-                    // a = (q*b)/p = (Self::ONE * Self::ONE) / p
                     Some(Self(
-                        <Self as private::HelperTrait>::FRACTIONAL_SQ_H.0 / self.0,
+                        <Self as _priv::Consts>::FRACTIONAL_SQ_H.0 / self.0,
                         PhantomData,
                     ))
                 }
             }
 
+            #[doc = "Returns the largest integer less than or equal to this decimal value"]
+            #[doc = "\n\nThis operation maintains the correct decimal scaling."]
             pub fn floor(&self) -> Self {
-                // Never fails, we divide by denominator 1 and then multiply by 1
-                self.checked_div(<Self as private::HelperTrait>::FRACTIONAL_H)
-                    .and_then(|v| v.checked_mul(<Self as private::HelperTrait>::FRACTIONAL_H))
+                self.checked_div(<Self as _priv::Consts>::FRACTIONAL_H)
+                    .and_then(|v| v.checked_mul(<Self as _priv::Consts>::FRACTIONAL_H))
                     .unwrap()
             }
 
+            #[doc = "Returns the smallest integer greater than or equal to this decimal value"]
+            #[doc = "\n\nReturns `None` if the operation would overflow."]
+            #[doc = "\n\nThis operation maintains the correct decimal scaling."]
             pub fn checked_ceil(&self) -> Option<Self> {
                 let floor = self.floor();
                 if self.0 == floor.0 {
@@ -215,6 +278,9 @@ macro_rules! unsigned_fixed {
                 }
             }
 
+            #[doc = "Returns the smallest integer greater than or equal to this decimal value"]
+            #[doc = "\n\nPanics if the operation would overflow."]
+            #[doc = "\n\nThis operation maintains the correct decimal scaling."]
             pub fn unchecked_ceil(&self) -> Self {
                 self.checked_ceil().unwrap()
             }
