@@ -1,0 +1,9 @@
+[package]
+name = "fixedb10"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+typenum = "1.17"
+bnum = "0.12"
+disjoint_impls = "0.8"
